@@ -4,6 +4,8 @@
 **/*.pyc
 
 .vscode/
+.codexignore
+PATHLLM_software_journal_fast_plan.md
 
 *.pdf
 *.aux
@@ -24,6 +26,10 @@ data/processed/
 **/*.parquet
 **/*.joblib
 reports/*_models/
+
+pkdd-15-predict-taxi-service-trajectory-i/train.csv
+pkdd-15-predict-taxi-service-trajectory-i/test.csv
+pkdd-15-predict-taxi-service-trajectory-i/sampleSubmission.csv
 
 !data/raw/*.README
 !pkdd-15-predict-taxi-service-trajectory-i/metaData_taxistandsID_name_GPSlocation.csv
