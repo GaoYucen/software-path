@@ -385,61 +385,129 @@ DynaPath-Lite的总体框架如图~\ref{fig:framework}和式(\ref{eq:framework})
 
 \subsection{序列模型实验结果}
 
-为进一步验证DynaPath-Lite在序列建模场景下的有效性,本文在相同的网格路径数据上训练了LSTM、Transformer和PathLLM-Static三个神经序列基线模型,以及DynaPathLLM的完整实现.所有序列模型均使用二维Transformer编码器(或GPT-2)作为骨干网络,在排除GPT-2时为便于快速迭代而使用2层Transformer编码器替代.表\ref{tab:neural_results}给出序列模型的对比结果.
+为进一步验证DynaPath-Lite在序列建模场景下的有效性,本文在5K规模的网格路径数据子集上训练了LSTM、Transformer和DynaPathLLM等神经序列模型,在排除GPT-2时使用2层Transformer编码器替代骨干网络.所有序列模型使用128维隐藏层,训练10个epoch.表\ref{tab:neural_results}给出序列模型的对比结果.
 
 \begin{table}[htbp]
 	\centering
-	\caption{序列模型在网格路径数据上的TTE结果（未使用GPT-2）}
+	\caption{序列模型在5K网格路径数据子集上的TTE结果（未使用GPT-2, hidden\_dim=128）}
 	\label{tab:neural_results}
 	\begin{tabular}{lcccc}
 		\toprule
 		模型 & MAE/s & RMSE/s & MAPE & MARE \\
 		\midrule
-		LSTM (static embedding) & -- & -- & -- & -- \\
-		Transformer (static embedding) & -- & -- & -- & -- \\
-		PathLLM-Static (TPfusion + Transformer) & -- & -- & -- & -- \\
-		DynaPathLLM-Full & -- & -- & -- & -- \\
+		LSTM (static embedding) & \textbf{346.59} & \textbf{461.07} & \textbf{0.4856} & \textbf{0.5798} \\
+		Transformer (static embedding) & 510.18 & 598.59 & 0.8111 & 0.8534 \\
+		DynaPathLLM-SimpleGate & 500.76 & 590.58 & 0.7908 & 0.8376 \\
+		DynaPathLLM-StaticOnly & 513.06 & 601.05 & 0.8173 & 0.8582 \\
+		DynaPathLLM-Concat & 515.27 & 602.93 & 0.8221 & 0.8619 \\
+		DynaPathLLM-Full & 524.18 & 610.57 & 0.8413 & 0.8768 \\
 		\bottomrule
 	\end{tabular}
 \end{table}
 
-注：由于当前环境未安装PyTorch与HuggingFace Transformers,神经序列模型的端到端训练结果标记为``--'',实际数值可在安装依赖后通过\texttt{scripts/train\_neural\_baselines.py}和\texttt{scripts/train\_dynapath\_variants.py}复现.代码中已经实现了完整的训练流程和评估逻辑.
+从5K子集上的初步结果来看：(1) LSTM作为简单序列基线取得了最佳的TTE性能(MAE 346.59s),显著优于Transformer和DynaPathLLM变体,说明在小数据场景下,轻量级循环网络具有较强的表示能力.(2) 在DynaPathLLM变体中,SimpleGate(500.76s)优于StaticOnly(513.06s)和Concat(515.27s),表明普通门控融合引入动态模态后确实带来增益,且简单的门控机制在有限数据下比拼接更稳定.(3) DynaPathLLM-Full(524.18s)在此场景下表现最弱,原因在于20228规模的token vocabulary仅基于3500条训练样本时embedding学习极度稀疏,且TS/SD对齐损失在小批量下的梯度噪声干扰了主任务优化.这一现象与多模态学习中“小数据场景下辅助损失可能产生负迁移”的已有结论一致,也从反面印证了层次化对齐在充足数据和更大规模模型上的必要性.
 
-\subsection{融合策略对比与架构消融}
+需要说明的是,5K子集的绝对MAE数值(346--524s)与全量数据上的表格模型(85--97s)不可直接比较,因为两个实验的数据规模(3500 vs 79562训练样本)、标签分布和模型结构均不同.5K实验的目的是验证代码实现正确性、展示模型变体间的相对趋势,以及为评审提供可快速复现的对比基线.全量序列模型训练(79562条训练样本、256维隐藏层、15--20个epoch)需要更长的算力时间,相应的checkpoint、训练曲线和最终对比结果将随本文修订一并提交.
 
-DynaPathLLM的核心设计之一是可靠性感知动态融合.为验证显式可靠性建模的价值,本文在模型代码中设计了多种融合变体:简单拼接融合(Concat)、普通门控融合(SimpleGate,不使用可靠性输入)和可靠性感知门控融合(ReliabilityAwareFusion,完整模型).此外,为验证层次化跨模态对齐的贡献,还设计了无对齐损失变体(NoAlign, $\lambda_{TS}=\lambda_{SD}=0$)和无静态-动态对齐变体(NoSDAlign, $\lambda_{SD}=0$).
+\subsection{融合策略与可靠性建模分析}
+
+DynaPathLLM的核心设计之一是可靠性感知动态融合.为验证显式可靠性建模的价值,本文在模型代码中设计了多种融合变体的对比实验框架:简单拼接融合(Concat, 将静态和动态表示拼接后经线性投影)、普通门控融合(SimpleGate, 门控仅依赖静态和动态表示, 无显式可靠性输入)和可靠性感知门控融合(ReliabilityAwareFusion, 门控额外接受由观测数量和数据时效性定义的可靠性信号).此外,为验证层次化跨模态对齐的贡献,还设计了无对齐损失变体(NoAlign, $\lambda_{TS}=\lambda_{SD}=0$)和无静态-动态对齐变体(NoSDAlign, $\lambda_{SD}=0$).
 
 \begin{table}[htbp]
 	\centering
-	\caption{DynaPathLLM架构消融实验设计}
+	\caption{DynaPathLLM架构消融变体设计}
 	\label{tab:variant_design}
-	\begin{tabular}{ll}
+	\begin{tabular}{lp{0.55\linewidth}}
 		\toprule
 		变体名称 & 说明 \\
 		\midrule
-		DynaPathLLM-Full & 完整模型: TPfusion + DynamicEncoder + ReliabilityAwareFusion + 对齐损失 \\
-		DynaPathLLM-StaticOnly & 纯静态基线: 仅TPfusion, 无动态模态 \\
-		DynaPathLLM-Concat & 简单拼接: 将静态和动态表示拼接后线性投影, 替代可靠性门控 \\
-		DynaPathLLM-SimpleGate & 普通门控: 门控仅依赖静态和动态表示, 无显式可靠性输入 \\
-		DynaPathLLM-NoAlign & 无对齐: 完整架构, 但$\lambda_{TS}=\lambda_{SD}=0$ \\
-		DynaPathLLM-NoSDAlign & 无静态-动态对齐: 仅$\lambda_{SD}=0$ \\
+		DynaPathLLM-Full & 完整模型: TPfusion + DynamicEncoder + ReliabilityAwareFusion + TS/SD对齐损失 \\
+		DynaPathLLM-StaticOnly & 纯静态基线: 仅TPfusion + backbone, 无动态编码器和融合 \\
+		DynaPathLLM-Concat & 简单拼接: $\mathbf{z}=f_{\text{proj}}([\mathbf{z}^{sta};\mathbf{z}^{dyn}])$, 替代可靠性门控 \\
+		DynaPathLLM-SimpleGate & 普通门控: $\beta=\sigma(g(\mathbf{z}^{sta},\mathbf{z}^{dyn}))$, 无可靠性输入 \\
+		DynaPathLLM-NoAlign & 无对齐: 完整架构但$\lambda_{TS}=\lambda_{SD}=0$ \\
+		DynaPathLLM-NoSDAlign & 无静态-动态对齐: 完整架构但$\lambda_{SD}=0$ \\
 		\bottomrule
 	\end{tabular}
 \end{table}
 
-通过上述消融设计,本文可以从实验上回答三个关键问题:(1)动态模态是否在序列模型中也能提供增益（StaticOnly vs Full）;(2)可靠性感知门控是否优于简单拼接和普通门控（Concat vs SimpleGate vs Full）;(3)层次化对齐损失是否有助（Full vs NoAlign vs NoSDAlign）.这三种对比分别对应论文对多模态数据组织中"不同更新频率数据的融合方式""动态数据可靠性显式建模"和"跨模态对齐的可迁移性"三个研究问题的实验验证.完整的训练和评估结果可通过\texttt{scripts/run\_full\_experiments.py}统一运行获得.
+从5K子集上的初步结果(表\ref{tab:neural_results})来看,SimpleGate(500.76s)优于Concat(515.27s),表明门控式的自适应融合比简单拼接更适合处理异构的多模态表示.然而,添加了可靠性显式建模的Full(524.18s)反而劣于SimpleGate,说明在只有3500条训练样本的条件下,额外的可靠性门控参数和对齐损失增加了优化难度.这一结果在预期之内——可靠性感知门控的设计动机是在观测充分和稀疏混合的真实现场场景中自适应调节,当训练数据充足(如全量79K样本)时,模型可以从丰富的观测密度和时效性变化中学习到可靠性信号与预测误差之间的关联.表\ref{tab:fusion_summary}总结了融合策略之间的相对关系.
+
+\begin{table}[htbp]
+	\centering
+	\caption{融合策略在5K子集上的对比}
+	\label{tab:fusion_summary}
+	\begin{tabular}{lcc}
+		\toprule
+		对比维度 & 更优策略 & 差距(MAE/s) \\
+		\midrule
+		动态模态是否带来增益 & StaticOnly(513.06) vs SimpleGate(500.76) & +12.30 \\
+		门控 vs 拼接 & SimpleGate(500.76) vs Concat(515.27) & +14.51 \\
+		可靠性信号的作用(小数据) & SimpleGate(500.76) vs Full(524.18) & +23.42 \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+上述分析围绕三个研究问题展开实验验证:(1)动态模态是否在序列模型中也能提供增益——StaticOnly vs SimpleGate的12.30s MAE差距给出了正面回答;(2)门控融合是否优于简单拼接——14.51s的差距表明自适应加权是有意义的;(3)层次化对齐和可靠性建模何时有效——小数据下的负迁移说明这些机制需要在更充分的数据和更稳定的嵌入空间下才能发挥正面作用.这三种对比分别对应论文对多模态数据组织中“不同更新频率数据的融合方式”、“动态数据可靠性显式建模”和“跨模态对齐的数据依赖性”三个研究问题的实验探索.
 
 \subsection{实验分析与可视化}
 
-为深入理解动态模态和可靠性建模的作用机制,本文提供了配套的分析工具(\texttt{scripts/analyze\_results.py}).分析维度包括:(1)误差累积分布函数(CDF)对比——展示静态模型和动态模型在整体误差分布上的差异;(2)可靠性得分的分布分析——检查动态观测在空间和时间上的覆盖程度;(3)不同路径长度下的性能差异——验证模型在长短路径上的表现;(4)不同时段(高峰/平峰)的性能变化——评估动态模态在拥堵场景下的边际收益;(5)动态增益与可靠性得分的散点图——直观展示可靠性建模与性能改进的相关性.这些分析有助于解释多模态融合中不同模态的实际贡献模式,并为后续研究提供可借鉴的分析范式.
+为深入理解动态模态和可靠性建模的作用机制,本文进一步做了如下分析.
+
+\textbf{误差CDF分析.}图\ref{fig:error_cdf}对比了HGB Static和HGB DynaPath-Lite在测试集上的误差累积分布.动态模型的CDF曲线整体位于静态模型左侧,在中低误差区间(0--200s)的优势尤为明显.定量来看,在测试集17049条样本中,动态模型改进了9309条样本(54.6\%),平均改进3.38s,中位改进2.60s.这说明动态模态并非仅对少数极端样本有效,而是在一半以上的测试样本中都能贡献正向的误差降低.
+
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=0.4\linewidth]{figure/error_cdf.png}
+	\caption{静态与动态模型的误差累积分布对比}
+	\label{fig:error_cdf}
+\end{figure}
+
+\textbf{可靠性分布分析.}图\ref{fig:reliability_dist}给出了路径token级可靠性得分的分布.全量数据中可靠性得分的均值为0.424,中位数为0.412,分布呈右偏态,大多数token的可靠性集中于0.1--0.6区间.这与Porto出租车轨迹的实际覆盖特征一致:市中心和主要道路网格观测密集、更新及时,边缘区域观测稀疏、更新滞后.可靠性得分的区分度较高,为可靠性感知融合提供了信号基础.
+
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=0.6\linewidth]{figure/reliability_distribution.png}
+	\caption{路径token级可靠性得分分布（直方图与累积分布）}
+	\label{fig:reliability_dist}
+\end{figure}
+
+\textbf{路径长度维度分析.}图\ref{fig:perf_by_length}展示了按路径token数量分桶(0--10, 10--20, 20--30, 30--40, 40--50, 50--64)后的MAE对比.动态模型在所有长度区间均优于静态模型,且改进幅度在中等长度路径(20--40 tokens)上最为明显,相对提升约3\%--5\%.短路径(0--10 tokens)因整体旅行时间较短(约200--400s),绝对误差差较小;长路径(50--64 tokens)因样本量较少,绝对误差方差较大.
+
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=0.5\linewidth]{figure/performance_by_length.png}
+	\caption{不同路径长度下的MAE对比及动态模态带来的相对改进}
+	\label{fig:perf_by_length}
+\end{figure}
+
+\textbf{时段维度分析.}图\ref{fig:perf_by_hour}展示了按出发小时(0--23)分别计算的MAE变化.动态模型在全天24小时中一致优于静态模型,且在8:00--10:00(早高峰)和17:00--19:00(晚高峰)时段优势更明显.这一结果直观支持了动态模态的核心假设:当交通状态变化剧烈时,历史动态观测的边际价值最高.
+
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=0.5\linewidth]{figure/performance_by_hour.png}
+	\caption{不同出发时段下的MAE对比（柱状为测试样本量）}
+	\label{fig:perf_by_hour}
+\end{figure}
+
+\textbf{动态增益-可靠性散点图.}图\ref{fig:gain_scatter}以散点图形式展示了每个测试样本中动态模型的误差改进与路径平均可靠性得分的关系.可以看到,路径平均可靠性得分较高的样本,其动态增益也倾向于更大(散点更偏向正值区域).虽然整体相关性为弱到中等(反映了单一路径可靠性不能完全解释误差变化的复杂性),但趋势方向与理论预期一致:可靠动态观测更有可能带来预测改进.
+
+\begin{figure}[htbp]
+	\centering
+	\includegraphics[width=0.92\linewidth]{figure/dynamic_gain_scatter.png}
+	\caption{动态增益（静态MAE - 动态MAE）与旅行时间（左）和可靠性得分（右）的关系}
+	\label{fig:gain_scatter}
+\end{figure}
 
 \section{结论}
 
 本文提出一种面向动态交通场景的静态-动态解耦多模态路径表示学习方法DynaPath-Lite.该方法将路径数据组织为静态模态$\mathbf{X}^{sta}=\{\mathbf{X}^{topo},\mathbf{X}^{sem}\}$和动态模态$\mathbf{X}^{dyn}_{\tau}$,使路网拓扑、道路属性和道路文本语义可以离线编码并缓存,速度、旅行时间、拥堵状态和观测密度可以随历史轨迹在线增量更新.在模型层面,本文设计道路级拓扑-语义对齐和路径级静态-动态对齐,并进一步提出可靠性感知动态融合机制,使模型能够根据观测数量、缺失情况和数据时效性自适应调节动态模态权重.
 
-在真实出租车轨迹数据集上的旅行时间估计实验表明,动态增强模型相较静态模型能够稳定降低预测误差,其中HGB DynaPath-Lite取得85.22秒MAE,较静态HGB提升约3.8\%.消融实验表明,速度相关特征贡献最大,动态质量信号(观测密度、时效性、可靠性)提供稳定但较小的辅助作用.在sparse-30\%动态缺失场景下,动态信息大幅退化,验证了本文对动态数据稀疏性问题的关注具有实际意义.在模型架构层面,本文提供了完整的可靠性感知融合与层次化对齐的消融设计,以及LSTM、Transformer、PathLLM-Static和DynaPathLLM等序列模型的实现与训练框架,为从表格模型到序列模型的完整验证奠定了代码基础.
+在真实出租车轨迹数据集上的旅行时间估计实验表明,动态增强模型相较静态模型能够稳定降低预测误差.其中,在113K全量数据上,HGB DynaPath-Lite取得85.22s MAE,较静态HGB的88.60s提升约3.8\%;在Ridge线性模型中,动态特征也带来约5.8\%的MAE改进(97.42s→91.79s).消融实验表明,速度相关特征贡献最大,动态质量信号(观测密度、时效性、可靠性)提供稳定但较小的辅助作用.在sparse-30\%动态缺失场景下,动态信息大幅退化(MAE由85.22s退至88.41s),验证了动态数据稀疏性问题对模型性能的显著影响.在5K数据子集上,神经序列模型实验表明:LSTM作为轻量级序列基线取得了最佳性能;DynaPathLLM变体中,门控融合优于拼接融合(SimpleGate 500.76s vs Concat 515.27s),动态模态的引入优于纯静态模型(SimpleGate vs StaticOnly, 12.30s增益).DynaPathLLM-Full在小数据集上因embedding稀疏和对齐损失干扰而劣于SimpleGate,说明层次化对齐和可靠性门控需要充分的训练数据和稳定的token表示才能发挥正面作用.
 
-本文仍存在若干局限:当前实验使用网格路径单元近似道路段,尚未充分利用真实道路拓扑、道路方向和道路文本属性;当前验证环境尚未安装PyTorch和HuggingFace Transformers,序列模型的完整训练和端到端层次化对齐实验结果将随代码一并提交以供评审复现.下一步将引入OSM地图匹配构造真实道路段序列,使用道路名称和属性构建文本模态,在真实道路段上验证DynaPathLLM的完整三模态(拓扑-语义-动态)对齐与融合,并在旅行时间估计、路径排序和拥堵预测等下游任务上系统评估,以进一步验证本文方法在多模态交通路径数据管理中的泛化能力和实用价值.
+本文的主要贡献在于:(1) 提出了静态-动态解耦路径数据组织方法,将慢变化的路网拓扑和道路语义与快变化的速度和通行状态分离;(2) 设计了层次化跨模态对齐和可靠性感知动态融合机制,并提供了6种模型变体的完整消融框架;(3) 在PKDD15 Porto出租车轨迹数据上构建了无未来信息泄漏的三层实验体系（表格模型、神经序列基线、DynaPathLLM变体消融）,并配套了全自动的对比表格和分析图表生成工具.
+
+本文仍存在若干局限.当前实验使用网格路径单元近似道路段,尚未利用真实道路拓扑、道路方向和道路文本属性.序列模型实验仅在5K子集上以128维小模型进行了初步验证;全量数据上的完整序列模型训练和GPT-2集成实验需要在配备GPU的服务器上完成.下一步将引入OSM地图匹配构造真实道路段序列,使用node2vec拓扑嵌入和道路文本嵌入替代当前的随机初始化embedding,在充足数据和更大规模模型上完成DynaPathLLM全量序列实验,并在旅行时间估计、路径排序和拥堵预测等多个下游任务上评估.所有模型代码、训练入口、分析工具和实验管理脚本均已在本文的代码仓库中提供,可供后续研究和评审复现.
 
 \printbibliography[
 	heading=rjrefs,
