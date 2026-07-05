@@ -1,0 +1,44 @@
+{
+  "data_dir": "data/processed/geolife_smoke",
+  "num_samples": 1159,
+  "num_train": 811,
+  "num_val": 173,
+  "num_test": 175,
+  "target_seconds": {
+    "min": 26.0,
+    "mean": 359.13546160483173,
+    "max": 19825.0
+  },
+  "results": [
+    {
+      "model": "train_mean_baseline",
+      "mae": 588.1819059362339,
+      "rmse": 1859.5447883662227,
+      "mape": 1.431031287871867,
+      "mare": 1.0226303330105204
+    },
+    {
+      "model": "ridge_static",
+      "mae": 2938.3277375247735,
+      "rmse": 4025.758374636299,
+      "mape": 16.122610153523816,
+      "mare": 5.108662885397852
+    },
+    {
+      "model": "ridge_static_dynamic",
+      "mae": 1834.6503613440925,
+      "rmse": 2739.5499386691754,
+      "mape": 9.524476142076693,
+      "mare": 3.18977699083212
+    },
+    {
+      "model": "rf_static_dynamic",
+      "mae": 1077.359900085034,
+      "rmse": 1902.6835672585053,
+      "mape": 4.918568640780129,
+      "mare": 1.8731295578405325
+    }
+  ],
+  "status": "pass",
+  "note": "Smoke test only. This validates generated arrays and dynamic features, not full PATH-LLM training."
+}
