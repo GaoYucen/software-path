@@ -21,8 +21,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def require_torch():
@@ -109,7 +115,31 @@ def run_epoch(model, loader, optimizer, device, torch, train: bool) -> dict:
     return result
 
 
-def make_model(name: str, road_size: int, pad_id: int, hidden_dim: int, use_llm: bool, torch):
+def load_optional_embedding(path: str | None, torch):
+    if path is None:
+        return None
+    return torch.tensor(np.load(path), dtype=torch.float32)
+
+
+def resolve_embedding_path(data_dir: Path, explicit_path: str | None, name: str) -> str | None:
+    if explicit_path is not None:
+        return explicit_path
+    candidate = data_dir / f"{name}_embeddings.npy"
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+def make_model(
+    name: str,
+    road_size: int,
+    pad_id: int,
+    hidden_dim: int,
+    use_llm: bool,
+    torch,
+    topo_embeddings=None,
+    semantic_embeddings=None,
+):
     """Factory: create a neural baseline model by name."""
     from dynapath.baselines import (
         LSTMTTE,
@@ -143,7 +173,11 @@ def make_model(name: str, road_size: int, pad_id: int, hidden_dim: int, use_llm:
             use_llm=use_llm,
             pad_id=pad_id,
         )
-        return PathLLMStatic(config)
+        return PathLLMStatic(
+            config,
+            topo_embeddings=topo_embeddings,
+            semantic_embeddings=semantic_embeddings,
+        )
     else:
         raise ValueError(f"Unknown model name: {name}")
 
@@ -164,6 +198,8 @@ def train_one_model(
     lr: float,
     num_workers: int,
     seed: int,
+    topo_embeddings,
+    semantic_embeddings,
 ) -> dict:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -173,7 +209,16 @@ def train_one_model(
         data_dir, batch_size, num_workers, DataLoader
     )
 
-    model = make_model(model_name, road_size, pad_id, hidden_dim, use_llm, torch).to(device)
+    model = make_model(
+        model_name,
+        road_size,
+        pad_id,
+        hidden_dim,
+        use_llm,
+        torch,
+        topo_embeddings=topo_embeddings,
+        semantic_embeddings=semantic_embeddings,
+    ).to(device)
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=lr,
@@ -240,6 +285,8 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--topo-embeddings", default=None)
+    parser.add_argument("--semantic-embeddings", default=None)
     args = parser.parse_args()
 
     torch, DataLoader = require_torch()
@@ -257,6 +304,12 @@ def main() -> None:
     train_set = DynaPathNPYDataset(args.data_dir, "train")
     road_size = train_set.road_size
     pad_id = train_set.pad_id
+    topo_path = resolve_embedding_path(Path(args.data_dir), args.topo_embeddings, "topo")
+    semantic_path = resolve_embedding_path(
+        Path(args.data_dir), args.semantic_embeddings, "semantic"
+    )
+    topo_embeddings = load_optional_embedding(topo_path, torch)
+    semantic_embeddings = load_optional_embedding(semantic_path, torch)
 
     use_llm = not args.no_llm
     model_names = [m.strip() for m in args.models.split(",") if m.strip()]
@@ -266,7 +319,13 @@ def main() -> None:
     print(f"Use LLM: {use_llm}")
     print(f"Training models: {model_names}")
 
-    all_results = {"data_dir": args.data_dir, "use_llm": use_llm, "results": []}
+    all_results = {
+        "data_dir": args.data_dir,
+        "topo_embeddings": topo_path,
+        "semantic_embeddings": semantic_path,
+        "use_llm": use_llm,
+        "results": [],
+    }
 
     for mname in model_names:
         print(f"\n{'='*60}")
@@ -288,6 +347,8 @@ def main() -> None:
             lr=args.learning_rate,
             num_workers=args.num_workers,
             seed=args.seed,
+            topo_embeddings=topo_embeddings,
+            semantic_embeddings=semantic_embeddings,
         )
         all_results["results"].append(result)
         print(f"  Test MAE: {result['test']['mae']:.2f}s, RMSE: {result['test']['rmse']:.2f}s")

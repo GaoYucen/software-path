@@ -35,8 +35,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def require_torch():
@@ -126,32 +132,57 @@ def run_epoch(
     return result
 
 
+def load_optional_embedding(path: str | None, torch):
+    if path is None:
+        return None
+    return torch.tensor(np.load(path), dtype=torch.float32)
+
+
+def resolve_embedding_path(data_dir: Path, explicit_path: str | None, name: str) -> str | None:
+    if explicit_path is not None:
+        return explicit_path
+    candidate = data_dir / f"{name}_embeddings.npy"
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+def build_embedding_module(torch, road_size: int, hidden_dim: int, weights=None):
+    import torch.nn as nn
+
+    if weights is not None:
+        return nn.Embedding.from_pretrained(weights.float(), freeze=False)
+    emb = nn.Embedding(road_size, hidden_dim)
+    nn.init.normal_(emb.weight, mean=0.0, std=0.02)
+    return emb
+
+
 # ---------------------------------------------------------------------------
 # Variant model builders
 # ---------------------------------------------------------------------------
 
-def make_full_model(config, torch):
+def make_full_model(config, torch, topo_embeddings=None, semantic_embeddings=None):
     """Complete DynaPathLLM."""
     from dynapath.models import DynaPathLLM
-    return DynaPathLLM(config)
+    return DynaPathLLM(config, topo_embeddings=topo_embeddings, semantic_embeddings=semantic_embeddings)
 
 
-def make_no_align_model(config, torch):
+def make_no_align_model(config, torch, topo_embeddings=None, semantic_embeddings=None):
     """DynaPathLLM with alignment losses disabled."""
     from dynapath.models import DynaPathLLM
     config.lambda_ts = 0.0
     config.lambda_sd = 0.0
-    return DynaPathLLM(config)
+    return DynaPathLLM(config, topo_embeddings=topo_embeddings, semantic_embeddings=semantic_embeddings)
 
 
-def make_no_sd_align_model(config, torch):
+def make_no_sd_align_model(config, torch, topo_embeddings=None, semantic_embeddings=None):
     """DynaPathLLM without static-dynamic alignment."""
     from dynapath.models import DynaPathLLM
     config.lambda_sd = 0.0
-    return DynaPathLLM(config)
+    return DynaPathLLM(config, topo_embeddings=topo_embeddings, semantic_embeddings=semantic_embeddings)
 
 
-def make_concat_model(config, torch):
+def make_concat_model(config, torch, topo_embeddings=None, semantic_embeddings=None):
     """Replace reliability-aware fusion with simple concatenation.
 
     This model concatenates static and dynamic representations (2*hidden_dim)
@@ -161,15 +192,13 @@ def make_concat_model(config, torch):
     import torch.nn.functional as F
 
     class ConcatFusionDynaPath(nn.Module):
-        def __init__(self, cfg):
+        def __init__(self, cfg, topo_init=None, sem_init=None):
             super().__init__()
             self.config = cfg
             self.pad_id = cfg.road_size - 1 if cfg.pad_id is None else cfg.pad_id
 
-            self.topo_emb = nn.Embedding(cfg.road_size, cfg.hidden_dim)
-            self.sem_emb = nn.Embedding(cfg.road_size, cfg.hidden_dim)
-            nn.init.normal_(self.topo_emb.weight, mean=0.0, std=0.02)
-            nn.init.normal_(self.sem_emb.weight, mean=0.0, std=0.02)
+            self.topo_emb = build_embedding_module(torch, cfg.road_size, cfg.hidden_dim, topo_init)
+            self.sem_emb = build_embedding_module(torch, cfg.road_size, cfg.hidden_dim, sem_init)
 
             self.topo_proj = nn.Linear(cfg.hidden_dim, cfg.hidden_dim)
             self.sem_proj = nn.Linear(cfg.hidden_dim, cfg.hidden_dim)
@@ -253,24 +282,22 @@ def make_concat_model(config, torch):
                 out["loss"] = out["loss_tte"]
             return out
 
-    return ConcatFusionDynaPath(config)
+    return ConcatFusionDynaPath(config, topo_embeddings, semantic_embeddings)
 
 
-def make_simple_gate_model(config, torch):
+def make_simple_gate_model(config, torch, topo_embeddings=None, semantic_embeddings=None):
     """Gated fusion WITHOUT explicit reliability input."""
     import torch.nn as nn
     import torch.nn.functional as F
 
     class SimpleGateDynaPath(nn.Module):
-        def __init__(self, cfg):
+        def __init__(self, cfg, topo_init=None, sem_init=None):
             super().__init__()
             self.config = cfg
             self.pad_id = cfg.road_size - 1 if cfg.pad_id is None else cfg.pad_id
 
-            self.topo_emb = nn.Embedding(cfg.road_size, cfg.hidden_dim)
-            self.sem_emb = nn.Embedding(cfg.road_size, cfg.hidden_dim)
-            nn.init.normal_(self.topo_emb.weight, mean=0.0, std=0.02)
-            nn.init.normal_(self.sem_emb.weight, mean=0.0, std=0.02)
+            self.topo_emb = build_embedding_module(torch, cfg.road_size, cfg.hidden_dim, topo_init)
+            self.sem_emb = build_embedding_module(torch, cfg.road_size, cfg.hidden_dim, sem_init)
 
             self.topo_proj = nn.Linear(cfg.hidden_dim, cfg.hidden_dim)
             self.sem_proj = nn.Linear(cfg.hidden_dim, cfg.hidden_dim)
@@ -350,24 +377,22 @@ def make_simple_gate_model(config, torch):
                 out["loss"] = out["loss_tte"]
             return out
 
-    return SimpleGateDynaPath(config)
+    return SimpleGateDynaPath(config, topo_embeddings, semantic_embeddings)
 
 
-def make_static_only_model(config, torch):
+def make_static_only_model(config, torch, topo_embeddings=None, semantic_embeddings=None):
     """Static-only baseline: TPfusion + backbone, no dynamic modality."""
     import torch.nn as nn
     import torch.nn.functional as F
 
     class StaticOnlyDynaPath(nn.Module):
-        def __init__(self, cfg):
+        def __init__(self, cfg, topo_init=None, sem_init=None):
             super().__init__()
             self.config = cfg
             self.pad_id = cfg.road_size - 1 if cfg.pad_id is None else cfg.pad_id
 
-            self.topo_emb = nn.Embedding(cfg.road_size, cfg.hidden_dim)
-            self.sem_emb = nn.Embedding(cfg.road_size, cfg.hidden_dim)
-            nn.init.normal_(self.topo_emb.weight, mean=0.0, std=0.02)
-            nn.init.normal_(self.sem_emb.weight, mean=0.0, std=0.02)
+            self.topo_emb = build_embedding_module(torch, cfg.road_size, cfg.hidden_dim, topo_init)
+            self.sem_emb = build_embedding_module(torch, cfg.road_size, cfg.hidden_dim, sem_init)
 
             self.topo_proj = nn.Linear(cfg.hidden_dim, cfg.hidden_dim)
             self.sem_proj = nn.Linear(cfg.hidden_dim, cfg.hidden_dim)
@@ -430,7 +455,7 @@ def make_static_only_model(config, torch):
                 out["loss"] = out["loss_tte"]
             return out
 
-    return StaticOnlyDynaPath(config)
+    return StaticOnlyDynaPath(config, topo_embeddings, semantic_embeddings)
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +495,8 @@ def train_one_variant(
     lr: float,
     num_workers: int,
     seed: int,
+    topo_embeddings,
+    semantic_embeddings,
 ) -> dict:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -480,7 +507,12 @@ def train_one_variant(
     )
 
     builder = VARIANT_BUILDERS[variant_name]
-    model = builder(config, torch).to(device)
+    model = builder(
+        config,
+        torch,
+        topo_embeddings=topo_embeddings,
+        semantic_embeddings=semantic_embeddings,
+    ).to(device)
     use_dynamic = variant_name != "static_only"
 
     optimizer = torch.optim.AdamW(
@@ -546,6 +578,8 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--topo-embeddings", default=None)
+    parser.add_argument("--semantic-embeddings", default=None)
     args = parser.parse_args()
 
     torch, DataLoader = require_torch()
@@ -560,6 +594,12 @@ def main() -> None:
 
     from dynapath.data import DynaPathNPYDataset
     train_set = DynaPathNPYDataset(args.data_dir, "train")
+    topo_path = resolve_embedding_path(Path(args.data_dir), args.topo_embeddings, "topo")
+    semantic_path = resolve_embedding_path(
+        Path(args.data_dir), args.semantic_embeddings, "semantic"
+    )
+    topo_embeddings = load_optional_embedding(topo_path, torch)
+    semantic_embeddings = load_optional_embedding(semantic_path, torch)
 
     from dynapath.models import DynaPathLLMConfig
     base_config = DynaPathLLMConfig(
@@ -584,6 +624,8 @@ def main() -> None:
 
     all_results = {
         "data_dir": args.data_dir,
+        "topo_embeddings": topo_path,
+        "semantic_embeddings": semantic_path,
         "use_llm": not args.no_llm,
         "results": [],
     }
@@ -611,6 +653,8 @@ def main() -> None:
             lr=args.learning_rate,
             num_workers=args.num_workers,
             seed=args.seed,
+            topo_embeddings=topo_embeddings,
+            semantic_embeddings=semantic_embeddings,
         )
         all_results["results"].append(result)
         t = result["test"]

@@ -5,6 +5,10 @@
 
 .vscode/
 .codexignore
+.venv/
+.uv-cache/
+.hf-cache/
+cache/
 PATHLLM_software_journal_fast_plan.md
 
 *.pdf
@@ -20,11 +24,13 @@ PATHLLM_software_journal_fast_plan.md
 *.xdv
 
 data/raw/*.csv
+data/raw/*.graphml
 data/processed/
 **/*.npy
 **/*.npz
 **/*.parquet
 **/*.joblib
+**/*.pt
 reports/*_models/
 
 pkdd-15-predict-taxi-service-trajectory-i/train.csv

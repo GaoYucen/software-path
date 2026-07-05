@@ -1,0 +1,49 @@
+{
+  "status": "pass",
+  "data_dir": "data/processed/pkdd15_osm_5k",
+  "output_dir": "reports/dynapath_llm_osm_5k_smoke",
+  "use_llm": true,
+  "llm_name": "gpt2",
+  "topo_embeddings": null,
+  "semantic_embeddings": "data/processed/pkdd15_osm_5k/semantic_embeddings.npy",
+  "target_scale": 1.0,
+  "num_train": 3318,
+  "num_val": 711,
+  "num_test": 712,
+  "history": [
+    {
+      "epoch": 1,
+      "train": {
+        "loss": 507756.6875,
+        "loss_tte": 507754.71875,
+        "loss_ts_align": 19.06197166442871,
+        "loss_sd_align": 0.6898287534713745,
+        "mae": 712.2135016322136,
+        "rmse": 712.569091964468,
+        "mape": 0.9995971122791308,
+        "mare": 0.9995978970276682
+      },
+      "val": {
+        "loss": 1457521.25,
+        "loss_tte": 1457519.25,
+        "loss_ts_align": 19.091796875,
+        "loss_sd_align": 0.7220122814178467,
+        "mae": 1207.2544152587652,
+        "rmse": 1207.2776020742238,
+        "mape": 0.9997967002241883,
+        "mare": 0.999796617191524
+      }
+    }
+  ],
+  "test": {
+    "loss": 356361.46875,
+    "loss_tte": 356359.5,
+    "loss_ts_align": 19.048725128173828,
+    "loss_sd_align": 0.6919944882392883,
+    "mae": 584.7724032625556,
+    "rmse": 596.9585321277331,
+    "mape": 0.9995927497349105,
+    "mare": 0.9996109457479583
+  },
+  "checkpoint": "reports/dynapath_llm_osm_5k_smoke/best_dynapath_llm.pt"
+}

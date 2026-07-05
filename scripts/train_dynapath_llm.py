@@ -11,8 +11,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def require_torch():
@@ -45,14 +51,33 @@ def load_optional_embedding(path: str | None, torch):
     return torch.tensor(np.load(path), dtype=torch.float32)
 
 
-def run_epoch(model, loader, optimizer, device, torch, train: bool) -> dict[str, float]:
+def resolve_embedding_path(data_dir: Path, explicit_path: str | None, name: str) -> str | None:
+    if explicit_path is not None:
+        return explicit_path
+    candidate = data_dir / f"{name}_embeddings.npy"
+    if candidate.exists():
+        return str(candidate)
+    return None
+
+
+def run_epoch(
+    model,
+    loader,
+    optimizer,
+    device,
+    torch,
+    train: bool,
+    max_batches: int | None = None,
+) -> dict[str, float]:
     model.train(train)
     total = {"loss": 0.0, "loss_tte": 0.0, "loss_ts_align": 0.0, "loss_sd_align": 0.0}
     count = 0
     preds = []
     trues = []
 
-    for batch in loader:
+    for batch_idx, batch in enumerate(loader):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
         batch = {k: v.to(device) for k, v in batch.items()}
         with torch.set_grad_enabled(train):
             out = model(
@@ -95,6 +120,18 @@ def main() -> None:
     parser.add_argument("--target-scale", type=float, default=1.0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--max-train-batches",
+        type=int,
+        default=None,
+        help="Limit batches per training epoch for smoke tests.",
+    )
+    parser.add_argument(
+        "--max-eval-batches",
+        type=int,
+        default=None,
+        help="Limit batches for validation/test passes during smoke tests.",
+    )
     args = parser.parse_args()
 
     torch, DataLoader = require_torch()
@@ -136,8 +173,10 @@ def main() -> None:
     else:
         device = torch.device(args.device)
 
-    topo_embeddings = load_optional_embedding(args.topo_embeddings, torch)
-    semantic_embeddings = load_optional_embedding(args.semantic_embeddings, torch)
+    topo_path = resolve_embedding_path(Path(args.data_dir), args.topo_embeddings, "topo")
+    semantic_path = resolve_embedding_path(Path(args.data_dir), args.semantic_embeddings, "semantic")
+    topo_embeddings = load_optional_embedding(topo_path, torch)
+    semantic_embeddings = load_optional_embedding(semantic_path, torch)
     config = DynaPathLLMConfig(
         road_size=train_set.road_size,
         dynamic_dim=train_set.dynamic_x.shape[-1],
@@ -159,8 +198,24 @@ def main() -> None:
     best_val = float("inf")
     best_path = out_dir / "best_dynapath_llm.pt"
     for epoch in range(1, args.epochs + 1):
-        train_metrics = run_epoch(model, train_loader, optimizer, device, torch, train=True)
-        val_metrics = run_epoch(model, val_loader, optimizer, device, torch, train=False)
+        train_metrics = run_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            torch,
+            train=True,
+            max_batches=args.max_train_batches,
+        )
+        val_metrics = run_epoch(
+            model,
+            val_loader,
+            optimizer,
+            device,
+            torch,
+            train=False,
+            max_batches=args.max_eval_batches,
+        )
         item = {"epoch": epoch, "train": train_metrics, "val": val_metrics}
         history.append(item)
         print(json.dumps(item, indent=2))
@@ -170,13 +225,23 @@ def main() -> None:
 
     checkpoint = torch.load(best_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
-    test_metrics = run_epoch(model, test_loader, optimizer, device, torch, train=False)
+    test_metrics = run_epoch(
+        model,
+        test_loader,
+        optimizer,
+        device,
+        torch,
+        train=False,
+        max_batches=args.max_eval_batches,
+    )
     report = {
         "status": "pass",
         "data_dir": args.data_dir,
         "output_dir": str(out_dir),
         "use_llm": not args.no_llm,
         "llm_name": args.llm_name,
+        "topo_embeddings": topo_path,
+        "semantic_embeddings": semantic_path,
         "target_scale": args.target_scale,
         "num_train": len(train_set),
         "num_val": len(val_set),

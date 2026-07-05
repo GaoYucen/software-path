@@ -91,6 +91,33 @@ data/processed/pkdd15_grid_120k_clean/
 └── metadata.json              # 数据构建元信息
 ```
 
+## OSM 道路段数据
+
+为了从网格 token 升级到真实道路段，本仓库新增了 OSM 近似 map matching 脚本：
+
+```bash
+python scripts/prepare_pkdd15_osm_dynamic.py \
+  --train-csv pkdd-15-predict-taxi-service-trajectory-i/train.csv \
+  --out-dir data/processed/pkdd15_osm_5k \
+  --graph-path data/raw/porto_drive.graphml \
+  --max-rows 5000
+```
+
+该脚本会：
+
+- 下载或复用 Porto 区域 OSM drive graph；
+- 将 GPS 点吸附到 OSM 路网节点，并用最短路桥接相邻点；
+- 导出真实 OSM edge 序列；
+- 生成 `edge_metadata.csv`、`edge_texts.csv` 和 `semantic_embeddings.npy`；
+- 生成与现有训练脚本兼容的 `data_road.npy`、`dynamic_path.npy`、`trip_time.npy` 等文件。
+
+当前已验证可用的目录示例：
+
+```text
+data/processed/pkdd15_osm_smoke_500/
+data/processed/pkdd15_osm_5k/
+```
+
 当前数据摘要：
 
 | 项目 | 数值 |
@@ -196,6 +223,15 @@ static representation + dynamic representation + reliability
 - `loss_ts_align`：道路级 Topology-Semantics 对齐，包含实例级和特征级 InfoNCE。
 - `loss_sd_align`：路径级 Static-Dynamic 对齐，使用 batch 内静态路径表示和动态路径表示做 InfoNCE。
 
+工程可跑版新增了一个轻量文本模态构建步骤：当只有网格 token 而没有 OSM 道路文本时，先根据 token 的历史速度、可靠性、出现频率和时段分布自动生成文本描述，再编码为 `semantic_embeddings.npy`。
+
+先生成文本模态：
+
+```bash
+python scripts/build_grid_semantic_embeddings.py \
+  --data-dir data/processed/pkdd15_grid_120k_clean
+```
+
 训练入口：
 
 ```bash
@@ -205,6 +241,20 @@ python scripts/train_dynapath_llm.py \
   --llm-name gpt2 \
   --epochs 3 \
   --batch-size 8
+```
+
+脚本会自动读取 `data-dir/semantic_embeddings.npy`。如果只想做 GPT-2 工程 smoke test，可使用较小数据集和 batch 限制：
+
+```bash
+python scripts/train_dynapath_llm.py \
+  --data-dir data/processed/pkdd15_quick_5k \
+  --output-dir reports/dynapath_llm_quick_smoke \
+  --llm-name gpt2 \
+  --epochs 1 \
+  --batch-size 2 \
+  --device cpu \
+  --max-train-batches 2 \
+  --max-eval-batches 1
 ```
 
 如果本机没有 GPT-2 缓存或 Transformers 环境，可以先用小 Transformer 做形状调试：
@@ -218,7 +268,7 @@ python scripts/train_dynapath_llm.py \
   --batch-size 8
 ```
 
-注意：当前运行环境尚未安装 `torch` 和 `transformers`，因此本轮只完成了模型代码、训练入口和语法检查；真实大模型训练需要先安装 PyTorch 与 HuggingFace Transformers，并准备道路段级拓扑/文本 embedding。当前网格 token 版本如果不提供 `--topo-embeddings` 和 `--semantic-embeddings`，模型会使用可训练 embedding 作为占位模态。
+注意：当前网格 token 版本的 `semantic_embeddings.npy` 来自自动生成的文本描述，适合工程验证“文本模态 + GPT-2 主链”是否能跑通，但它不是最终论文版的真实道路文本语义。最终版本仍需要 OSM 地图匹配、道路属性文本和更强的语义编码方式。
 
 大模型训练依赖可参考：
 
